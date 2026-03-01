@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db
 from app.models import Article
 from app.schemas import ArticleRead, StatsRead
+from app.services.email_service import send_test_email
 from app.services.pipeline import ingest_once, send_digest_for_last_24_hours, send_digest_once_per_local_day
 from app.services.scheduler import start_scheduler, stop_scheduler
 
@@ -99,6 +100,15 @@ def run_ingestion(db: Session = Depends(get_db)):
 def run_digest(db: Session = Depends(get_db)):
     _ensure_db_ready()
     return send_digest_for_last_24_hours(db)
+
+
+@app.post(f"{settings.api_prefix}/jobs/test-email")
+def run_test_email():
+    sent, error = send_test_email()
+    result = {"status": "ok" if sent else "failed", "sent": sent}
+    if error:
+        result["error"] = error
+    return result
 
 
 @app.get(f"{settings.api_prefix}/cron/ingest")

@@ -44,6 +44,7 @@ def ingest_once(db: Session) -> dict:
     fetched = len(raw_articles)
     new_articles = 0
     alerts_sent = 0
+    alert_errors: list[str] = []
     alert_candidates: list[Article] = []
 
     for item in raw_articles:
@@ -80,15 +81,21 @@ def ingest_once(db: Session) -> dict:
 
     if settings.alert_recipients:
         for candidate in alert_candidates:
-            if send_alert(candidate):
+            sent, error = send_alert(candidate)
+            if sent:
                 alerts_sent += 1
+            elif error:
+                alert_errors.append(error)
 
-    return {
+    result = {
         "status": "ok",
         "fetched": fetched,
         "new_articles": new_articles,
         "alerts_sent": alerts_sent,
     }
+    if alert_errors:
+        result["alert_errors"] = alert_errors[:3]
+    return result
 
 
 def send_digest_for_last_24_hours(db: Session) -> dict:
@@ -103,12 +110,15 @@ def send_digest_for_last_24_hours(db: Session) -> dict:
     if not recent_articles:
         return {"status": "skipped", "reason": "No new articles in the last 24 hours.", "articles": 0}
 
-    sent = send_daily_digest(recent_articles, recipients=settings.digest_recipients)
-    return {
+    sent, error = send_daily_digest(recent_articles, recipients=settings.digest_recipients)
+    result = {
         "status": "ok" if sent else "failed",
         "articles": len(recent_articles),
         "sent": sent,
     }
+    if error:
+        result["error"] = error
+    return result
 
 
 def send_digest_once_per_local_day(db: Session, job_name: str = "daily_digest") -> dict:
