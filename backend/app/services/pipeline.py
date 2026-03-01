@@ -32,7 +32,17 @@ def ingest_once(db: Session, max_per_feed: int | None = None) -> dict:
     effective_max_per_feed = (
         max_per_feed if isinstance(max_per_feed, int) and max_per_feed > 0 else settings.max_articles_per_feed
     )
-    raw_articles = fetch_articles(settings.rss_feeds, max_per_feed=effective_max_per_feed)
+    try:
+        raw_articles = fetch_articles(settings.rss_feeds, max_per_feed=effective_max_per_feed)
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "fetched": 0,
+            "new_articles": 0,
+            "alerts_sent": 0,
+            "max_per_feed": effective_max_per_feed,
+            "error": f"RSS fetch failed: {type(exc).__name__}: {exc}",
+        }
     if not raw_articles:
         return {
             "status": "ok",
@@ -48,26 +58,28 @@ def ingest_once(db: Session, max_per_feed: int | None = None) -> dict:
     new_articles = 0
     alerts_sent = 0
     alert_errors: list[str] = []
+    processing_errors: list[str] = []
     alert_candidates: list[Article] = []
 
     for item in raw_articles:
         if item.link in existing_links:
             continue
 
-        enrichment = enrich_article(item.title, item.raw_content)
-        article = Article(
-            title=item.title,
-            link=item.link,
-            source=item.source,
-            published_at=item.published_at,
-            summary=enrichment.summary,
-            category=enrichment.category,
-            sentiment_score=enrichment.sentiment_score,
-            sentiment_label=enrichment.sentiment_label,
-            raw_content=item.raw_content,
-            content_hash=_content_hash(item.title, item.link),
-        )
         try:
+            enrichment = enrich_article(item.title, item.raw_content)
+            article = Article(
+                title=item.title[:500],
+                link=item.link[:2000],
+                source=item.source[:255],
+                published_at=item.published_at,
+                summary=enrichment.summary,
+                category=enrichment.category[:100],
+                sentiment_score=enrichment.sentiment_score,
+                sentiment_label=enrichment.sentiment_label[:32],
+                raw_content=item.raw_content,
+                content_hash=_content_hash(item.title, item.link),
+            )
+
             # Use a savepoint so duplicate link conflicts are skipped without failing the whole job.
             with db.begin_nested():
                 db.add(article)
@@ -79,8 +91,22 @@ def ingest_once(db: Session, max_per_feed: int | None = None) -> dict:
                 alert_candidates.append(article)
         except IntegrityError:
             continue
+        except Exception as exc:
+            processing_errors.append(f"{type(exc).__name__}: {exc}")
+            continue
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return {
+            "status": "failed",
+            "fetched": fetched,
+            "new_articles": new_articles,
+            "alerts_sent": 0,
+            "max_per_feed": effective_max_per_feed,
+            "error": f"DB commit failed: {type(exc).__name__}: {exc}",
+        }
 
     if settings.alert_recipients:
         for candidate in alert_candidates:
@@ -99,6 +125,9 @@ def ingest_once(db: Session, max_per_feed: int | None = None) -> dict:
     }
     if alert_errors:
         result["alert_errors"] = alert_errors[:3]
+    if processing_errors:
+        result["processing_errors"] = processing_errors[:3]
+        result["processing_errors_count"] = len(processing_errors)
     return result
 
 
