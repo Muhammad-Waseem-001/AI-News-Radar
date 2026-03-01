@@ -1,4 +1,5 @@
 import os
+import logging
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +15,8 @@ from app.services.scheduler import start_scheduler, stop_scheduler
 
 settings = get_settings()
 is_vercel = bool(os.getenv("VERCEL"))
+logger = logging.getLogger(__name__)
+startup_db_error: str | None = None
 
 app = FastAPI(title=settings.app_name)
 
@@ -28,8 +31,15 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
+    global startup_db_error
+    startup_db_error = None
+
     if settings.auto_create_tables:
-        Base.metadata.create_all(bind=engine)
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception as exc:
+            startup_db_error = f"{type(exc).__name__}: {exc}"
+            logger.exception("Database initialization failed during startup.")
 
     if settings.enable_local_scheduler and not is_vercel:
         start_scheduler(SessionLocal)
@@ -48,6 +58,14 @@ def root():
 
 @app.get("/health")
 def health():
+    if startup_db_error:
+        return {
+            "status": "degraded",
+            "serverless": is_vercel,
+            "database": "error",
+            "message": "Database initialization failed. Check DATABASE_URL and backend logs.",
+            "detail": startup_db_error,
+        }
     return {"status": "ok", "serverless": is_vercel}
 
 
@@ -63,25 +81,37 @@ def _verify_cron_secret(request: Request) -> None:
         )
 
 
+def _ensure_db_ready() -> None:
+    if startup_db_error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database not ready. Check DATABASE_URL and backend logs.",
+        )
+
+
 @app.post(f"{settings.api_prefix}/jobs/ingest")
 def run_ingestion(db: Session = Depends(get_db)):
+    _ensure_db_ready()
     return ingest_once(db)
 
 
 @app.post(f"{settings.api_prefix}/jobs/digest")
 def run_digest(db: Session = Depends(get_db)):
+    _ensure_db_ready()
     return send_digest_for_last_24_hours(db)
 
 
 @app.get(f"{settings.api_prefix}/cron/ingest")
 def run_ingestion_cron(request: Request, db: Session = Depends(get_db)):
     _verify_cron_secret(request)
+    _ensure_db_ready()
     return ingest_once(db)
 
 
 @app.get(f"{settings.api_prefix}/cron/digest")
 def run_digest_cron(request: Request, db: Session = Depends(get_db)):
     _verify_cron_secret(request)
+    _ensure_db_ready()
     return send_digest_once_per_local_day(db)
 
 
@@ -93,6 +123,7 @@ def list_articles(
     source: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
+    _ensure_db_ready()
     stmt = select(Article)
     if sentiment:
         stmt = stmt.where(Article.sentiment_label == sentiment.strip().lower())
@@ -107,6 +138,7 @@ def list_articles(
 
 @app.get(f"{settings.api_prefix}/articles/{{article_id}}", response_model=ArticleRead)
 def get_article(article_id: int, db: Session = Depends(get_db)):
+    _ensure_db_ready()
     article = db.get(Article, article_id)
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
@@ -115,6 +147,7 @@ def get_article(article_id: int, db: Session = Depends(get_db)):
 
 @app.get(f"{settings.api_prefix}/stats", response_model=StatsRead)
 def get_stats(db: Session = Depends(get_db)):
+    _ensure_db_ready()
     total_articles = db.scalar(select(func.count()).select_from(Article)) or 0
     sources = db.scalar(select(func.count(func.distinct(Article.source)))) or 0
     avg_sentiment = db.scalar(select(func.avg(Article.sentiment_score))) or 0.0
