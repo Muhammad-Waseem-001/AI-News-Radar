@@ -24,6 +24,7 @@ app = FastAPI(title=settings.app_name)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,9 +92,12 @@ def _ensure_db_ready() -> None:
 
 
 @app.post(f"{settings.api_prefix}/jobs/ingest")
-def run_ingestion(db: Session = Depends(get_db)):
+def run_ingestion(
+    max_per_feed: int | None = Query(default=None, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
     _ensure_db_ready()
-    return ingest_once(db)
+    return ingest_once(db, max_per_feed=max_per_feed)
 
 
 @app.post(f"{settings.api_prefix}/jobs/digest")

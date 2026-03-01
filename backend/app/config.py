@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     cron_secret: str = ""
 
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
+    cors_origin_regex: str = r"https://.*\.vercel\.app"
 
     @field_validator(
         "rss_feeds",

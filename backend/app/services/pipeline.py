@@ -28,8 +28,11 @@ def _now_local() -> datetime:
     return datetime.now(timezone.utc).astimezone(tz)
 
 
-def ingest_once(db: Session) -> dict:
-    raw_articles = fetch_articles(settings.rss_feeds, max_per_feed=settings.max_articles_per_feed)
+def ingest_once(db: Session, max_per_feed: int | None = None) -> dict:
+    effective_max_per_feed = (
+        max_per_feed if isinstance(max_per_feed, int) and max_per_feed > 0 else settings.max_articles_per_feed
+    )
+    raw_articles = fetch_articles(settings.rss_feeds, max_per_feed=effective_max_per_feed)
     if not raw_articles:
         return {
             "status": "ok",
@@ -92,6 +95,7 @@ def ingest_once(db: Session) -> dict:
         "fetched": fetched,
         "new_articles": new_articles,
         "alerts_sent": alerts_sent,
+        "max_per_feed": effective_max_per_feed,
     }
     if alert_errors:
         result["alert_errors"] = alert_errors[:3]
