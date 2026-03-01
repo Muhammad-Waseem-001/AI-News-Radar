@@ -89,7 +89,7 @@ Use two Vercel projects from same repo:
 
 Files already added:
 
-- `backend/index.py` (Vercel entrypoint)
+- `backend/api/index.py` (Vercel entrypoint)
 - `backend/vercel.json` (functions + cron + rewrites)
 
 Default cron schedules in `backend/vercel.json`:
